@@ -3,8 +3,13 @@ import requests
 import json
 import re
 import os
+import logging
 
 app = Flask(__name__)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def get_str_between(string, start, end):
     try:
@@ -18,20 +23,31 @@ def handle_square_payment():
     if os.path.exists('cookie.txt'):
         os.remove('cookie.txt')
 
-    # Fetch random user details
+    # Fetch random user details with fallback
     try:
-        response = requests.get('https://randomuser.me/api/1.2/?nat=us')
+        response = requests.get('https://randomuser.me/api/1.2/?nat=us', timeout=5)
+        response.raise_for_status()  # Raise an exception for HTTP errors
         data = response.json()['results'][0]
         name = data['name']['first']
         last = data['name']['last']
         email = data['email']
-        street = data['location']['street']['name']
+        street = data['location']['street']  # Updated to match API structure
         city = data['location']['city']
         state = data['location']['state']
         phone = data['phone']
         postcode = data['location']['postcode']
+        logger.info("Successfully fetched random user details")
     except Exception as e:
-        return jsonify({'status': 'error', 'message': 'Failed to fetch random user details'}), 500
+        logger.error(f"Failed to fetch random user details: {str(e)}")
+        # Fallback default values based on provided API structure
+        name = "John"
+        last = "Doe"
+        email = "john.doe@example.com"
+        street = "123 Main St"
+        city = "New York"
+        state = "NY"
+        phone = "123-456-7890"
+        postcode = "10001"
 
     # Parse credit card details from query parameter
     lista = request.args.get('cc', '')
@@ -54,12 +70,12 @@ def handle_square_payment():
 
     # First Request: Get card nonce
     post_data = {
-        'client_id': 'sq0idp-44DdJoMjFy9fTcbhVfTDKw',
-        'location_id': 'YPRFA9B0NPNCZ',
-        'session_id': 'iKQpWCAj9kBXXgVvouaNVQoFi4A1rLkog7NchS_w4fKHwICY_rDRKz2n4bGbDUpzmAwUdjqvRjTrFot8IGI=',
+        'client_id': os.getenv('SQUARE_CLIENT_ID', 'sq0idp-44DdJoMjFy9fTcbhVfTDKw'),
+        'location_id': os.getenv('SQUARE_LOCATION_ID', 'YPRFA9B0NPNCZ'),
+        'session_id': os.getenv('SQUARE_SESSION_ID', 'iKQpWCAj9kBXXgVvouaNVQoFi4A1rLkog7NchS_w4fKHwICY_rDRKz2n4bGbDUpzmAwUdjqvRjTrFot8IGI='),
         'website_url': 'https://www.flooringhut.co.uk/',
         'squarejs_version': '27d3bdf1bc',
-        'analytics_token': 'ZWSHAERBO5QMFU6ZPSURZB7GB47BPK2PATUZG3NJCS67RUOANO4NTXKRPQLI2KI2FDZ4IRULBFJYELZAA772YYWHKZDST5MH',
+        'analytics_token': os.getenv('SQUARE_ANALYTICS_TOKEN', 'ZWSHAERBO5QMFU6ZPSURZB7GB47BPK2PATUZG3NJCS67RUOANO4NTXKRPQLI2KI2FDZ4IRULBFJYELZAA772YYWHKZDST5MH'),
         'card_data': {
             'number': cc,
             'exp_month': int(mes),
@@ -86,12 +102,16 @@ def handle_square_payment():
     }
 
     try:
-        response = requests.post('https://pci-connect.squareup.com/v2/card-nonce?_=1622802632941.176&version=27d3bdf1bc', json=post_data, headers=headers)
+        response = requests.post('https://pci-connect.squareup.com/v2/card-nonce?_=1622802632941.176&version=27d3bdf1bc', json=post_data, headers=headers, timeout=5)
+        response.raise_for_status()
         result = response.json()
         cnon = get_str_between(response.text, '"card_nonce":"', '"')
         if not cnon:
+            logger.error("Failed to retrieve card nonce")
             return jsonify({'status': 'error', 'message': 'Failed to retrieve card nonce'}), 500
+        logger.info("Successfully retrieved card nonce")
     except Exception as e:
+        logger.error(f"First request failed: {str(e)}")
         return jsonify({'status': 'error', 'message': f'First request failed: {str(e)}'}), 500
 
     # Second Request: Verify payment
@@ -112,9 +132,9 @@ def handle_square_payment():
             'version': '0f725b5aa454b79bda2c7aac780dfa45ea6a6f5b',
             'website_url': 'https://www.flooringhut.co.uk/'
         },
-        'client_id': 'sq0idp-44DdJoMjFy9fTcbhVfTDKw',
+        'client_id': os.getenv('SQUARE_CLIENT_ID', 'sq0idp-44DdJoMjFy9fTcbhVfTDKw'),
         'payment_source': cnon,
-        'universal_token': {'token': 'YPRFA9B0NPNCZ', 'type': 'UNIT'},
+        'universal_token': {'token': os.getenv('SQUARE_LOCATION_ID', 'YPRFA9B0NPNCZ'), 'type': 'UNIT'},
         'verification_details': {
             'billing_contact': {
                 'address_lines': [f'{street}'],
@@ -147,11 +167,15 @@ def handle_square_payment():
     }
 
     try:
-        response = requests.post('https://connect.squareup.com/v2/analytics/verifications', json=post_data, headers=headers)
+        response = requests.post('https://connect.squareup.com/v2/analytics/verifications', json=post_data, headers=headers, timeout=5)
+        response.raise_for_status()
         verf = get_str_between(response.text, '"token":"', '"')
         if not verf:
+            logger.error("Failed to retrieve verification token")
             return jsonify({'status': 'error', 'message': 'Failed to retrieve verification token'}), 500
+        logger.info("Successfully retrieved verification token")
     except Exception as e:
+        logger.error(f"Verification request failed: {str(e)}")
         return jsonify({'status': 'error', 'message': f'Verification request failed: {str(e)}'}), 500
 
     # Third Request: Submit payment
@@ -209,10 +233,13 @@ def handle_square_payment():
     }
 
     try:
-        response = requests.post('https://www.flooringhut.co.uk/rest/fhdomestic/V1/guest-carts/fwiIbJjCkX80SP7H9iZJHPeKbHB6wAAa/payment-information', json=post_data, headers=headers)
+        response = requests.post('https://www.flooringhut.co.uk/rest/fhdomestic/V1/guest-carts/fwiIbJjCkX80SP7H9iZJHPeKbHB6wAAa/payment-information', json=post_data, headers=headers, timeout=5)
+        response.raise_for_status()
         result_text = response.text
         resp = get_str_between(result_text, "<div id='validation_message_2_4' class='gfield_description validation_message' aria-live='polite'>", '</div>')
+        logger.info("Successfully submitted payment request")
     except Exception as e:
+        logger.error(f"Payment request failed: {str(e)}")
         return jsonify({'status': 'error', 'message': f'Payment request failed: {str(e)}'}), 500
 
     # Process response
